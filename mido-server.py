@@ -4,10 +4,13 @@ import mido
 import threading
 from time import sleep
 
+# global
+sig_stop =     threading.Event()
+
 class PlaybackServer:
     def __init__ (self, tcp_port=8100):
         self.tcp_port =     tcp_port
-        self.clients =      []
+        self.clients =      dict()
         self.port =         self.init_output_port()
         self.exit_code =    self.start_server()
 
@@ -18,7 +21,7 @@ class PlaybackServer:
         ports = mido.get_output_names()
 
         self.show_log ("all ports:", ports)
-        self.show_log ("using port {} ...", ports[0])
+        self.show_log ("using port /{}/ ...".format(ports[0]))
 
         mido.open_output(ports[0])
 
@@ -32,24 +35,14 @@ class PlaybackServer:
         # spawn a thread to listen to events there
         thread = threading.Thread(target=self.client_instance, daemon=True, args=(client,))
 
-        self.clients.append( (thread, client) )
+        # map
+        self.clients[client] = thread
+        # OLD ( (thread, client) )
         self.show_log ('spawn thread for: {}'.format(client.name))
-
-        # OLD # client in enumerate(self.clients):
-        #                     (thread, client)
-        # for index in range(len(self.clients)):
-        #     client = self.clients[index] 
-        #     if client[1].closed:
-        #         self.show_log ('{} disconnected'.format(client[1].name))
-        #         #self.clients[index][0].join()
-        #         # close the thread
-        #         #client[0].join()
-        #         self.show_log ('killing the thread {} ...'.format(client[0]))
-        #         del self.clients[index]
 
         return thread
 
-    def message_callback(self, message):
+    def process_message (self, message):
 
         # we dont want to send wrong datatypes to internal classes
         # (they will prolly whine)
@@ -70,52 +63,38 @@ class PlaybackServer:
 
         # the closest thing we have to callbacks
         # (runs in a newly spawned thread)
-        while True:
-            for message in client.iter_pending():
-                self.show_log ('Received {} from {}'.format(message, client))
-
+        while not sig_stop.is_set():
+            try:
+                message = client.receive(block=True)
+                self.show_log ('RECV: {} from {}'.format(message, client))
                 # thread safe as .send is thread safe
-                self.message_callback(message)
-
-            # thread is killed automatically here
-            if client.closed:
-                self.show_log ('{} disconnected'.format(client.name))
-                
-                # cleanup. 
-                # Otherwise, we will end up with a billion of references to null
-                for e in self.clients:
-                    # fugly :/
-                    if e[1] == client:
-                        self.clients.remove(e)
-                        break
-                #done
-
-                # try:
-                # except ValueError:
-                #     self.show_log ('failed to remove the reference: {}.'.format(client))
-                #     pass
-
-                #self.clients.pop(client) # int
-                #del self.clients[client]
-
-                return
-
+                self.process_message(message)
+            # if socket is closed during .receive
+            except OSError:
+                self.show_log ('socket closed')
+                break
             #done
-        #done
 
+        self.show_log ('{} disconnected'.format(client.name))
+        
+        # kill the thread && cleanup. 
+        # Otherwise, we will end up with a billion of references to null
+        client.close()
+        self.clients.pop(client, None)
+
+        return
 
     def start_server (self):
         self.show_log("starting the server ...")
 
-
         with mido.sockets.PortServer('', self.tcp_port) as server:
             #threading.Thread(target=self.listen, daemon=True)
 
-            self.show_log("server is listening on 0.0.0.0 TCP/{}.".format(self.tcp_port))
+            self.show_log("server is listening on TCP/{}.".format(self.tcp_port))
             while True:
                 try:
                     # Handle connections.
-                    client = server.accept(block=False)
+                    client = server.accept(block=True)
                     if client:
                         # creates a thread for each client
                         thread = self.accept_connection(client)
@@ -123,11 +102,7 @@ class PlaybackServer:
 
                 except KeyboardInterrupt:
                     self.show_log("killing the server ...")
-
-                    self.show_log("killing the threads ...")
-                    for client in self.clients:
-                        self.show_log("killing thread {} ... ".format(client[0].native_id)) 
-                        client[0].join()
+                    sig_stop.set()
                     break
 
                 except Exception as E:

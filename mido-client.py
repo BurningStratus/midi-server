@@ -14,7 +14,7 @@ while True:
     try:
         raw_ = input("length note velocity:\nmidi> ").split()
 
-        timeout, note, velocity = int(raw_[0]), int(raw_[1]), int(raw_[2])
+        timeout, note, velocity = float(raw_[0]), int(raw_[1]), int(raw_[2])
         
         msg_on = genpacket("note_on", note, velocity)
 
